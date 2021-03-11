@@ -1,22 +1,29 @@
-import Bot, { Action } from './bot.ts';
+import Bot from './bot.ts';
 import { getTrack } from './soundcloud.ts';
+import { Actions, Message, Guild } from './interfaces.ts';
 
 import keys from './secret.ts';
 
 const bot = new Bot(keys.botId);
 
-bot.handle(Action.message, (info, botAction) => {
-    //console.log(info);
+bot.handle(Actions.MessageCreate, (payload : unknown) => {
+    const message = <Message> payload;
 
-    if(info.author.username == "Meqeq")
-        return;
+    const voiceChannel = bot.getUserVoiceChannel(message.author);
 
-    botAction.response(info.content.replace(/;/g, ""), info.channel);
+    if(voiceChannel == "") return message.respond("Not in voice channel");
 
-    bot.joinVoice(info.guild, keys.guildId);
+    bot.joinVoice(bot.guild_id, voiceChannel);
+
 });
+
+bot.handle(Actions.GuildCreate, (payload: unknown) => {
+    const guild = <Guild> payload;
+
+    //console.log(guild);
+})
     
 
-const audio = await getTrack("539700708", keys.clientId);
+//const audio = await getTrack("539700708", keys.clientId);
 
-await Deno.writeFile('ll.wav', audio);
+//await Deno.writeFile('ll.wav', audio);

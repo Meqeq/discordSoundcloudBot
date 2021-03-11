@@ -1,24 +1,6 @@
 import VoiceGateway, { VoiceGatewayProps } from './voiceGateway.ts';
-
-export interface Author {
-    username: string;
-    id: string;
-}
-
-export interface MessageInfo {
-    content: string;
-    author: Author;
-    channel: string;
-    guild: string;
-}
-
-export type Handler = (info: MessageInfo, botAction: BotAction) => void;
-
-export interface BotAction {
-    response: (message: string, channel: string) => Promise<Response>;
-}
-
-export enum Action { message }
+import { getUser, getChannels, sendMessage } from './api.ts';
+import { Guild, Message, GatewayMessage, Opcodes, HelloMessage, Actions, ReadyMessage, VoiceStateUpdate, VoiceState, User, VoiceServerUpdate } from './interfaces.ts';
 
 export enum Intents {
     GUILDS = 1 << 0,
@@ -38,20 +20,19 @@ export enum Intents {
     DIRECT_MESSAGE_TYPING = 1 << 14
 }
 
+type Handler = (payload: unknown) => void;
+
+
 class Bot {
     private sockAddr = "wss://gateway.discord.gg/?v=8&encoding=json";
-    private api = "https://discord.com/api/v8/";
 
-    private token: string;
+    private token : string;
     private gateway: WebSocket;
+    private guild : Guild | undefined;
+    private voiceGateway : VoiceGateway | undefined;
+    private _id = "";
 
-    private handlers: Map<Action, Handler> = new Map();
-
-    private voiceGatewayProps: VoiceGatewayProps = { 
-        address: "", token: "", userId: "", serverId: "", sessionId: ""
-    };
-
-    private voiceGateway: VoiceGateway | undefined;
+    private handlers : Map<Actions, Handler> = new Map();
 
     constructor(token: string) {
         this.token = token;
@@ -63,76 +44,38 @@ class Bot {
         this.gateway.onclose = this.onClose;
     }
 
-    private startHeartbeat(interval: number) {
-        const heartbeat = JSON.stringify({
-            op: 1,
-            d: null
-        });
-        
-        setInterval(() => {
-            this.gateway.send(heartbeat);
-        }, interval);
+    get guild_id() : string {
+        if(this.guild) return this.guild.id;
+        return "";
     }
 
-    private identify() {
-        const msg = JSON.stringify({
-            op: 2,
-            d: {
-                token: this.token,
-                intents: Intents.GUILDS | Intents.GUILD_VOICE_STATES | Intents.GUILD_MESSAGES,
-                properties: { $os: "linux", $browser: "my_library", $device: "my_library" }
-            }
-        });
-    
-        this.gateway.send(msg);
-    }
-
-    private onStart = (event: Event) => {
-        console.log("Bot is alive");
+    get id() : string {
+        return this._id;
     }
 
     private onMessage = (event: MessageEvent) => {
-        const message = JSON.parse(event.data);
-        //console.log("KEK", message.op);
+        const message : GatewayMessage<unknown> = JSON.parse(event.data);
+        
         switch(message.op) {
-            case 10:
-                this.startHeartbeat(message.d.heartbeat_interval);
+            case Opcodes.Hello: 
+                this.startHeartbeat((<GatewayMessage<HelloMessage>> message).d.heartbeat_interval);
                 this.identify();
                 break;
-            case 11:
-                console.log("Heartbeat ACK");
+            case Opcodes.HeartbeatACK:
+                //console.log("Heartbeat ack");
                 break;
-            case 0: 
+            case Opcodes.Dispatch:
                 this.handleDispatch(message);
-                //console.log(message);
-                break;
-            default:
-                console.log(message);
-                break;
         }
     }
 
-    private onClose = (event: CloseEvent) => {
-        console.log(event);
-    }
-
-    private sendMessage = (message: string, channel: string) : Promise<Response> => {
-        return fetch(this.api + `channels/${channel}/messages`, {
-            method: "POST",
-            headers: {
-                "Authorization": "Bot " + this.token,
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                content: message,
-                tts: false
-            })
-        })
+    public handle(action: Actions, handler: Handler) {
+        this.handlers.set(action, handler);
     }
 
     public joinVoice(guild: string, channel: string) {
         const joinMsg = JSON.stringify({
-            op: 4,
+            op: Opcodes.VoiceStateUpdate,
             d: {
                 guild_id: guild,
                 channel_id: channel,
@@ -144,27 +87,89 @@ class Bot {
         this.gateway.send(joinMsg);
     }
 
-    private handleDispatch(message: any) {
-        const type = message.t;
-        const msg = message.d.content;
-        let handler: Handler | undefined;
-        //console.log(type);
-        switch(type) {
-            case 'MESSAGE_CREATE':
-                handler = this.handlers.get(Action.message);
-                if(handler)
-                    handler({
-                        author: {
-                            username: message.d.author.username,
-                            id: message.d.author.id
-                        },
-                        content: message.d.content,
-                        channel: message.d.channel_id,
-                        guild: message.d.guild_id
-                    }, {
-                        response: this.sendMessage
-                    });
+    public getUserVoiceChannel(user: User) : string {
+        if(!this.guild) return "";
+
+        const voiceState = this.guild.voice_states.find(value => value.user_id == user.id);
+
+        if(!voiceState) return "";
+
+        return voiceState.channel_id;
+    }
+
+    private handleDispatch(payload: GatewayMessage<unknown>) {
+        const handler = this.handlers.get(<Actions> payload.t);
+
+        switch(payload.t) {
+            case Actions.MessageCreate: {
+                const message = <Message> payload.d;
+
+                if(message.author.id != this.id && message.author.id != "805921493702672384") {
+                    message.respond = (content: string) => sendMessage(message.channel_id, content);
+                    if(handler) handler(message);
+                }
+                    
                 break;
+            }   
+
+            case Actions.GuildCreate:
+                this.guild = <Guild> payload.d;
+
+                if(handler) handler(payload.d);
+
+                break;
+
+            case Actions.Ready: 
+                //console.log(payload.d);
+                this._id = (<ReadyMessage>payload.d).user.id;
+                break;
+
+            case Actions.VoiceState: {
+                const state = <VoiceStateUpdate> payload.d;
+                
+                if(!this.guild) return;
+
+                if(state.channel_id == null) {
+                    this.guild.voice_states = this.guild.voice_states.filter(value => value.user_id != state.user_id);
+                } else {
+                    const user = this.guild.voice_states.findIndex(value => value.user_id != state.user_id);
+                    const { member, ...p } = state;
+                    if(user != -1) {
+                        this.guild.voice_states[user] = p;
+                    } else {
+                        this.guild.voice_states.push(p);
+                    }
+
+                }
+
+                //console.log(this.guild?.voice_states);
+                break;
+            }
+
+            case Actions.VoiceServer: {
+                if(this.guild) {
+                    const botVoice = this.guild.voice_states.find(value => value.user_id == this._id);
+
+                    if(!botVoice) return;
+
+                    const voiceUpdate = <VoiceServerUpdate> payload.d;
+
+                    this.voiceGateway = new VoiceGateway({
+                        userId: botVoice.user_id,
+                        sessionId: botVoice.session_id,
+                        token: voiceUpdate.token,
+                        serverId: voiceUpdate.guild_id,
+                        address: voiceUpdate.endpoint
+                    })
+                }
+                break;
+            }
+                
+
+            default: 
+                console.log(payload.t);
+        }
+        /*
             case 'VOICE_STATE_UPDATE':
                 this.voiceGatewayProps.userId = message.d.user_id;
                 this.voiceGatewayProps.sessionId = message.d.session_id;
@@ -175,13 +180,39 @@ class Bot {
                 this.voiceGatewayProps.address = message.d.endpoint;
 
                 this.voiceGateway = new VoiceGateway(this.voiceGatewayProps);
-
-                break;
-        }
+        }*/
     }
 
-    public handle(action: Action, handler: Handler) {
-        this.handlers.set(action, handler);
+    private onStart = (event: Event) => {
+        console.log("Bot is alive");
+    }
+
+    private onClose = (event: CloseEvent) => {
+        console.log(event);
+    }
+
+    private startHeartbeat(interval: number) {
+        const heartbeat = JSON.stringify({
+            op: Opcodes.Heartbeat,
+            d: null
+        });
+        
+        setInterval(() => {
+            this.gateway.send(heartbeat);
+        }, interval);
+    }
+
+    private identify() {
+        const msg = JSON.stringify({
+            op: Opcodes.Identify,
+            d: {
+                token: this.token,
+                intents: Intents.GUILDS | Intents.GUILD_VOICE_STATES | Intents.GUILD_MESSAGES,
+                properties: { $os: "linux", $browser: "my_library", $device: "my_library" }
+            }
+        });
+    
+        this.gateway.send(msg);
     }
 }
 
