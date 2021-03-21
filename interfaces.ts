@@ -63,6 +63,7 @@ export enum Opcodes {
 export interface GatewayMessage<T> {
     t: string;
     op: Opcodes,
+    s: number,
     d: T
 }
 
@@ -73,7 +74,8 @@ export interface HelloMessage {
 export enum Actions {
     MessageCreate = "MESSAGE_CREATE", Ready = "READY",
     GuildCreate = "GUILD_CREATE", VoiceState = "VOICE_STATE_UPDATE",
-    VoiceServer = "VOICE_SERVER_UPDATE"
+    VoiceServer = "VOICE_SERVER_UPDATE", ReactionAdd = "MESSAGE_REACTION_ADD",
+    MessageUpdate = "MESSAGE_UPDATE", ReactionRemove = "MESSAGE_REACTION_REMOVE"
 }
 
 export interface ReadyMessage {
@@ -89,4 +91,18 @@ export interface VoiceServerUpdate {
     token: string;
     guild_id: string;
     endpoint: string;
+}
+
+export interface ReactionAdd {
+    user_id: string;
+    message_id: string;
+    member: {
+        user: User
+    };
+    emoji: {
+        name: string;
+        id: string;
+    };
+    channel_id: string;
+    guild_id: string;
 }
